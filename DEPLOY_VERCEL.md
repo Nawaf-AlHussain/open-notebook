@@ -163,11 +163,17 @@ and the stored AI credentials.
 
 1. Sign up at https://surrealdb.com/cloud (GitHub/Google login). The **Start** plan
    includes 1 free instance + 1 GB storage free, no credit card needed.
-2. Create an instance in **Singapore** (same region as the Render service) and copy the
-   host, user and password from the instance's connection details.
-3. In the SurrealDB console, create namespace `open_notebook` and database
-   `open_notebook` under it.
-4. Update the Render service environment and restart:
+2. Create an organisation, then **Instances → Deploy new instance**: plan `Start`,
+   instance type `Free`, region closest to **Singapore** (region is locked after
+   creation), empty data setup, smallest storage.
+3. Create **root credentials** on the instance (Studio's credential flow, or SurrealQL:
+   `DEFINE USER open_notebook ON ROOT PASSWORD '<password>' ROLES OWNER;`) — the app
+   signs in with plain username/password.
+4. Create namespace `open_notebook` and database `open_notebook` under it (Studio
+   prompts for them, or `DEFINE NAMESPACE open_notebook; USE NS open_notebook;
+   DEFINE DATABASE open_notebook;`).
+5. Copy the endpoint from the instance's **Connect** menu.
+6. Update the Render service environment and restart:
 
    | Name | Old (ephemeral) | New |
    |---|---|---|
@@ -177,8 +183,16 @@ and the stored AI credentials.
 
    `SURREAL_NAMESPACE` / `SURREAL_DATABASE` stay `open_notebook`.
 
-5. On boot the image re-runs `migrate-from-env`, so the Groq/Google credentials and the
-   seven default model slots are re-seeded into the fresh database automatically.
+7. The fresh database is empty and the image does **not** auto-migrate. Re-seed it:
+
+   ```bash
+   curl -X POST -H "Authorization: Bearer <OPEN_NOTEBOOK_PASSWORD>" \
+        https://<backend>/api/credentials/migrate-from-env
+   ```
+
+   This copies the Groq/Google keys from env vars into the encrypted credential store.
+   Then re-register the seven default model slots via Manage → Models (or rerun the
+   seed script used during initial setup).
 
 What still stays ephemeral: raw uploaded files and generated podcast audio under
 `/app/data` (they live on the Render filesystem, not in SurrealDB). Re-upload a source
@@ -186,6 +200,9 @@ file if it disappears after a restart; the extracted text, notes, embeddings, po
 metadata and model settings all survive in the cloud database.
 
 ### 2. Backend sleeps after 15 minutes idle (cold start ≈ 50 s)
+
+> Note: the SurrealDB Cloud free instance can also pause when idle — if the app reports
+> database errors after a long gap, open SurrealDB Studio and resume the instance.
 
 Render Free spins the service down when nobody calls it. Zero-cost options:
 
@@ -233,8 +250,9 @@ the app's hard dependency (search and ask need them), so spend that quota carefu
 
 The Render and Vercel API tokens used to create this deployment can be revoked at any
 time — the running services do not depend on them. The **Groq and Google API keys must
-stay** (they are backend env vars and re-seed the encrypted credential store on boot);
-revoke/rotate those only if you also re-add credentials via Manage → Models in the UI.
+stay** (they are backend env vars and are re-seeded into the encrypted credential store
+via `migrate-from-env` whenever the database is empty); revoke/rotate those only if you
+also re-add credentials via Manage → Models in the UI.
 
 ---
 
