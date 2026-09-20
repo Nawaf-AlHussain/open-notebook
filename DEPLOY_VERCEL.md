@@ -166,14 +166,29 @@ and the stored AI credentials.
 2. Create an organisation, then **Instances → Deploy new instance**: plan `Start`,
    instance type `Free`, region closest to **Singapore** (region is locked after
    creation), empty data setup, smallest storage.
-3. Create **root credentials** on the instance (Studio's credential flow, or SurrealQL:
-   `DEFINE USER open_notebook ON ROOT PASSWORD '<password>' ROLES OWNER;`) — the app
-   signs in with plain username/password.
-4. Create namespace `open_notebook` and database `open_notebook` under it (Studio
-   prompts for them, or `DEFINE NAMESPACE open_notebook; USE NS open_notebook;
-   DEFINE DATABASE open_notebook;`).
-5. Copy the endpoint from the instance's **Connect** menu.
-6. Update the Render service environment and restart:
+3. **Instance settings**: pick SurrealDB version **2.x** (the app image bundles a pinned
+   SurrealDB v2 binary — don't pick 1.x or 3.x, query semantics differ), region
+   **Singapore** (matches the Render service), and when prompted set instance
+   credentials (username + password). Save them — the app signs in with plain
+   username/password at *root/instance level*.
+4. Wait for the instance to show **Running**, open its **Connect** menu and copy the
+   endpoint (looks like `wss://<instance>.<region>.surreal.cloud`). Sanity-check it:
+
+   ```bash
+   curl -i https://<instance-host>/health   # expect HTTP 200
+   ```
+
+5. Create namespace `open_notebook` and database `open_notebook` (SurrealDB Studio in
+   the cloud console — sign in with the instance credentials, then SQL tab):
+
+   ```sql
+   DEFINE NAMESPACE open_notebook;
+   USE NS open_notebook;
+   DEFINE DATABASE open_notebook;
+   ```
+
+6. Update the Render service environment (Dashboard → service `open-notebook` →
+   **Environment** → edit → **Save Changes** — Render restarts the service itself):
 
    | Name | Old (ephemeral) | New |
    |---|---|---|
@@ -183,16 +198,27 @@ and the stored AI credentials.
 
    `SURREAL_NAMESPACE` / `SURREAL_DATABASE` stay `open_notebook`.
 
-7. The fresh database is empty and the image does **not** auto-migrate. Re-seed it:
+   ⚠️ Keep the `/rpc` path and the `wss://` scheme — the app passes this URL straight
+   into the SurrealDB websocket client. And use the *instance/root-level* user: a
+   database-level user cannot sign in (the app calls signin before choosing NS/DB).
+
+7. Watch the deploy go **Live** (Events tab), then verify: `https://<backend>/config`
+   should return `"dbStatus": "online"`.
+
+8. The fresh database is empty and migration is **not** automatic (it's a REST
+   endpoint, not a startup hook). Re-seed in this order:
 
    ```bash
+   # a) copy Groq/Google keys from env vars into the encrypted credential store
    curl -X POST -H "Authorization: Bearer <OPEN_NOTEBOOK_PASSWORD>" \
         https://<backend>/api/credentials/migrate-from-env
+
+   # b) register Google models (embeddings + flash) and Groq catalog + defaults
+   python scripts/seed_models.py && python scripts/seed_models_v2.py
    ```
 
-   This copies the Groq/Google keys from env vars into the encrypted credential store.
-   Then re-register the seven default model slots via Manage → Models (or rerun the
-   seed script used during initial setup).
+   (both scripts target the live backend URL baked into them and are safe to re-run on
+   an empty database; alternatively register everything by hand via Manage → Models)
 
 What still stays ephemeral: raw uploaded files and generated podcast audio under
 `/app/data` (they live on the Render filesystem, not in SurrealDB). Re-upload a source
@@ -250,8 +276,8 @@ the app's hard dependency (search and ask need them), so spend that quota carefu
 
 The Render and Vercel API tokens used to create this deployment can be revoked at any
 time — the running services do not depend on them. The **Groq and Google API keys must
-stay** (they are backend env vars and are re-seeded into the encrypted credential store
-via `migrate-from-env` whenever the database is empty); revoke/rotate those only if you
+stay** (they are backend env vars and get copied into the encrypted credential store by
+calling `migrate-from-env` once per fresh database); revoke/rotate those only if you
 also re-add credentials via Manage → Models in the UI.
 
 ---
