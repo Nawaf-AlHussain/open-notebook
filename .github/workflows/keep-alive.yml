@@ -1,0 +1,34 @@
+# Keeps the Render free-tier backend from idling out (spins down after 15 min
+# of inactivity). Pings the health endpoint every 10 minutes.
+#
+# NOTE: GitHub only runs `schedule` triggers from the repo's DEFAULT branch,
+# so merge/push this file to `main` for it to take effect.
+# For a more reliable pinger (no cron delays), use UptimeRobot or cron-job.org
+# instead — see DEPLOY_VERCEL.md, "Free-tier fixes (no credit card required)".
+
+name: Keep backend awake (Render free tier)
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    env:
+      BACKEND_URL: ${{ secrets.BACKEND_URL || 'https://open-notebook-7cim.onrender.com' }}
+    steps:
+      - name: Ping backend /config (retries cover the ~50s cold start)
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 "$BACKEND_URL/config" || true)
+            echo "attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "backend is awake"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "backend did not answer 200 yet, but the ping will have triggered a wake-up"
+          exit 0

@@ -147,6 +147,97 @@ not recoverable).
 
 ---
 
+## Free-tier fixes (no credit card required)
+
+The live deployment runs on Render Free + Vercel Hobby + free Groq/Gemini keys. Four
+limits come with that stack — each has a workaround that needs no payment method.
+
+### 1. Data is wiped on every restart (Render Free has no disks) — the critical one
+
+The single-container image runs SurrealDB *inside* the Render service
+(`SURREAL_URL=ws://localhost:8000/rpc`). Render Free instances have no persistent disk,
+so every restart, redeploy, or 15-minute spin-down erases all notebooks, sources, notes
+and the stored AI credentials.
+
+**Fix — move the database out of the container to SurrealDB Cloud (free):**
+
+1. Sign up at https://surrealdb.com/cloud (GitHub/Google login). The **Start** plan
+   includes 1 free instance + 1 GB storage free, no credit card needed.
+2. Create an instance in **Singapore** (same region as the Render service) and copy the
+   host, user and password from the instance's connection details.
+3. In the SurrealDB console, create namespace `open_notebook` and database
+   `open_notebook` under it.
+4. Update the Render service environment and restart:
+
+   | Name | Old (ephemeral) | New |
+   |---|---|---|
+   | `SURREAL_URL` | `ws://localhost:8000/rpc` | `wss://<your-instance-host>/rpc` |
+   | `SURREAL_USER` | `root` | your cloud DB user |
+   | `SURREAL_PASSWORD` | `root` | your cloud DB password |
+
+   `SURREAL_NAMESPACE` / `SURREAL_DATABASE` stay `open_notebook`.
+
+5. On boot the image re-runs `migrate-from-env`, so the Groq/Google credentials and the
+   seven default model slots are re-seeded into the fresh database automatically.
+
+What still stays ephemeral: raw uploaded files and generated podcast audio under
+`/app/data` (they live on the Render filesystem, not in SurrealDB). Re-upload a source
+file if it disappears after a restart; the extracted text, notes, embeddings, podcast
+metadata and model settings all survive in the cloud database.
+
+### 2. Backend sleeps after 15 minutes idle (cold start ≈ 50 s)
+
+Render Free spins the service down when nobody calls it. Zero-cost options:
+
+- **UptimeRobot** (free, no card): HTTP monitor hitting `https://<backend>/config`
+  every 5 minutes keeps the instance awake. 24/7 uptime uses ~744 of Render's 750
+  free instance-hours per month — it fits exactly one always-on service.
+- **cron-job.org** (free): same idea with any interval.
+- **GitHub Actions** (nothing to sign up for): this repo ships
+  `.github/workflows/keep-alive.yml`, which pings `/config` every 10 minutes. Push it
+  to the repo's *default* branch (schedules only run there). Caveat: Actions cron can
+  be delayed several minutes at peak times, so UptimeRobot is the more reliable choice.
+
+Keep-alive pings are a gray area under Render's fair-use policy; if the service gets
+flagged, fall back to accepting cold starts (the first click wakes it in ~1 minute).
+
+### 3. Groq free rate limits (HTTP 429)
+
+Free tier, no card: roughly 30 requests/min, ~1,000 requests/day per text model (some
+small models reach 14,400/day), and a few thousand tokens/min. Practical mitigations:
+
+- Add sources in batches rather than all at once — each ingest fires several
+  LLM/embedding calls and can blow the per-minute token cap.
+- Use `gpt-oss-20b` for routine transformations (titles, summaries) and keep
+  `gpt-oss-120b` for chat/ask where quality matters.
+- When Groq throttles, switch the chat model slot to `gemini-2.5-flash` (already
+  registered in this deployment) — it draws from Google's separate quota.
+
+### 4. Gemini free rate limits (embeddings)
+
+Google has cut free-tier quotas several times recently — check the live table at
+https://ai.google.dev/gemini-api/docs/rate-limits for current numbers. Embeddings are
+the app's hard dependency (search and ask need them), so spend that quota carefully:
+
+- Add a few sources at a time and wait for each to reach "ready" before the next batch.
+- Never delete and re-add a source just to refresh it — re-embedding burns quota.
+- Keep chat/STT/TTS on Groq so Gemini's daily quota stays reserved for embeddings.
+
+### What still needs a card eventually
+
+- Render persistent disks (persistence for uploads/podcast audio) — paid only.
+- Render Starter instance (no spin-down, more RAM) — ~$7/mo.
+- Everything else above works indefinitely on the free stack for personal use.
+
+### Security reminder
+
+The Render and Vercel API tokens used to create this deployment can be revoked at any
+time — the running services do not depend on them. The **Groq and Google API keys must
+stay** (they are backend env vars and re-seed the encrypted credential store on boot);
+revoke/rotate those only if you also re-add credentials via Manage → Models in the UI.
+
+---
+
 ## Local development with this setup
 
 ```bash
