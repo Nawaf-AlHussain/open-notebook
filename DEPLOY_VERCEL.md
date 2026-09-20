@@ -164,13 +164,15 @@ and the stored AI credentials.
 1. Sign up at https://surrealdb.com/cloud (GitHub/Google login). The **Start** plan
    includes 1 free instance + 1 GB storage free, no credit card needed.
 2. Create an organisation, then **Instances → Deploy new instance**: plan `Start`,
-   instance type `Free`, region closest to **Singapore** (region is locked after
-   creation), empty data setup, smallest storage.
-3. **Instance settings**: pick SurrealDB version **2.x** (the app image bundles a pinned
-   SurrealDB v2 binary — don't pick 1.x or 3.x, query semantics differ), region
-   **Singapore** (matches the Render service), and when prompted set instance
-   credentials (username + password). Save them — the app signs in with plain
-   username/password at *root/instance level*.
+   instance type `Free`, empty data setup, smallest storage. The free plan only
+   exposes a few AWS regions and none is labelled "Singapore" — pick the
+   Asia-Pacific one (`aps1` in the endpoint, the Singapore-side AWS region, which
+   matches the Render service). Region is locked after creation.
+3. **Instance settings**: pick SurrealDB version **2.6.5** (the newest 2.x release —
+   the app image bundles a pinned SurrealDB v2 binary, so do NOT pick the newer
+   3.x line such as 3.2.4, nor 1.x: query semantics differ), and when prompted set
+   instance credentials (username + password). Save them — the app signs in with
+   plain username/password at *root/instance level*.
 4. Wait for the instance to show **Running**, open its **Connect** menu and copy the
    endpoint (looks like `wss://<instance>.<region>.surreal.cloud`). Sanity-check it:
 
