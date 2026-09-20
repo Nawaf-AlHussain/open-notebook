@@ -41,3 +41,5 @@ yarn-error.log*
 next-env.d.ts
 
 doc_exports/
+# Exception: tracked example file
+!.env.example

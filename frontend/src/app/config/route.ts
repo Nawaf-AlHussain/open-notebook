@@ -55,8 +55,9 @@ function extractHostname(hostHeader: string): string | null {
  *
  * Auto-detection logic for API_URL:
  * 1. If API_URL env var is set, use it (explicit override)
- * 2. Otherwise, detect from incoming HTTP request headers (zero-config)
- * 3. Fallback to localhost:5055 if detection fails
+ * 2. If running on Vercel, use relative paths (rewrites proxy to INTERNAL_API_URL)
+ * 3. Otherwise, detect from incoming HTTP request headers (zero-config)
+ * 4. Fallback to localhost:5055 if detection fails
  *
  * This allows the same Docker image to work in different deployment scenarios.
  */
@@ -70,7 +71,16 @@ export async function GET(request: NextRequest) {
     })
   }
 
-  // Priority 2: Auto-detect from request headers
+  // Priority 2: On Vercel, fall back to relative paths so the browser talks to
+  // this deployment and Next.js rewrites proxy /api/* to INTERNAL_API_URL.
+  // The auto-detect logic below assumes the backend listens on :5055 of the
+  // same host, which is never true on Vercel (no port 5055 exposed).
+  if (process.env.VERCEL) {
+    console.log('[runtime-config] Running on Vercel without API_URL: using relative paths (rewrites proxy)')
+    return NextResponse.json({ apiUrl: '' })
+  }
+
+  // Priority 3: Auto-detect from request headers
   try {
     // Get the protocol (http or https)
     // Check X-Forwarded-Proto first (for reverse proxies), then fallback to request scheme.

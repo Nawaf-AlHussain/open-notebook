@@ -9,8 +9,11 @@ const allowedDevOrigins = process.env.NEXT_ALLOWED_DEV_ORIGINS
   : undefined;
 
 const nextConfig: NextConfig = {
-  // Enable standalone output for optimized Docker deployment
-  output: "standalone",
+  // Enable standalone output for optimized Docker deployment.
+  // Skipped on Vercel, which uses its own build output and does not need it.
+  ...(process.env.BUILD_STANDALONE === "1" || !process.env.VERCEL
+    ? { output: "standalone" as const }
+    : {}),
 
   ...(allowedDevOrigins && allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
 
