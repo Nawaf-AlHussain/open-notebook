@@ -268,6 +268,46 @@ the app's hard dependency (search and ask need them), so spend that quota carefu
 - Never delete and re-add a source just to refresh it — re-embedding burns quota.
 - Keep chat/STT/TTS on Groq so Gemini's daily quota stays reserved for embeddings.
 
+### 5. Sources stuck on "processing in progress" after a container restart — boot patch
+
+The Render service runs the prebuilt upstream image
+(`docker.io/lfnovo/open_notebook:v1-latest`), so code fixes cannot be shipped by
+pushing to this fork. The service's **Docker Command** (boot command) instead
+downloads and runs [`scripts/render_boot_patch.py`](scripts/render_boot_patch.py)
+from this branch at every container start, before supervisord launches
+api/worker/frontend. Two fixes ride along:
+
+1. **worker-requeue** — surreal-commands 1.3.x workers only ever pick up commands
+   with `status = 'new'` (boot scan + live listener). A command claimed by a worker
+   is flipped to `'running'` and only leaves that state when the same process marks
+   it completed/failed. If the container restarts mid-job (OOM, suspend/wake,
+   redeploy), the job is orphaned in `'running'` forever and every future worker
+   boots with "No existing commands found" — the source shows "processing in
+   progress" indefinitely. The patch requeues any `'running'` command back to
+   `'new'` at worker boot (safe: this deployment runs exactly one worker per
+   container, so anything in `'running'` at boot is by definition orphaned).
+2. **fastfail-missing-file** — `/app/data/uploads` is ephemeral (see fix 1), so a
+   requeued job whose file vanished would burn all 15 retries (~25 min of
+   exponential backoff) before failing. The patch makes `process_source` raise a
+   `ValueError` immediately (retry `stop_on` list), so the source turns to
+   **failed** within seconds with the message "Uploaded file is no longer
+   available on the server … Please re-upload the file."
+
+Operational notes:
+
+- The boot command is a single space-free token
+  (`python3 -c exec(__import__("base64").b64decode("…").decode())`) because Render
+  executes it exec-form (space-split); the base64 payload decodes to a readable
+  bootstrap: keep the stock port-swap `sed`, download the patch script, run it
+  fail-soft, then `execv` supervisord.
+- The patch script is **fail-soft and idempotent**: if the upstream image changes
+  and an anchor no longer matches, it logs `SKIP …` and boots unpatched; it never
+  raises (no `SystemExit` — it is exec'd where `__name__ == "__main__"`, and a
+  raised SystemExit would kill the bootstrap before supervisord starts).
+- After a mid-processing restart the old upload is gone regardless; the source will
+  now show **failed** with a clear message instead of spinning forever — delete it
+  and re-upload.
+
 ### What still needs a card eventually
 
 - Render persistent disks (persistence for uploads/podcast audio) — paid only.
