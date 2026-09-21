@@ -171,4 +171,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # NOTE: no SystemExit here! This script is exec'd from the container's
+    # bootstrap, where __name__ is inherited as "__main__"; raising SystemExit
+    # would kill the bootstrap before it execs supervisord.
+    main()
