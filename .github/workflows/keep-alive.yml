@@ -1,17 +1,30 @@
 # Keeps the Render free-tier backend from idling out (spins down after 15 min
-# of inactivity). Pings the health endpoint every 10 minutes.
+# of inactivity). Pings the health endpoint every ~5 minutes.
 #
-# NOTE: GitHub only runs `schedule` triggers from the repo's DEFAULT branch,
-# so merge/push this file to `main` for it to take effect.
-# For a more reliable pinger (no cron delays), use UptimeRobot or cron-job.org
-# instead — see DEPLOY_VERCEL.md, "Free-tier fixes (no credit card required)".
+# Two triggers work together:
+#   - `schedule` (GitHub may take hours to register new crons; fires when ready)
+#   - a SELF-PERPETUATING workflow_dispatch chain: each run re-dispatches the
+#     next run ~4 min later, giving a reliable ~5 min ping cadence with zero
+#     external services. If the chain ever breaks, re-run this workflow once
+#     from the Actions tab ("Run workflow") and it self-heals.
+#
+# NOTE: GitHub only runs `schedule` triggers from the repo's DEFAULT branch.
+# This branch is pushed to the fork and set as its default branch.
 
 name: Keep backend awake (Render free tier)
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
+
+permissions:
+  contents: write # keepalive anti-disable commit via the API
+  actions: write  # self-perpetuating chain re-dispatch
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
 
 jobs:
   ping:
@@ -26,9 +39,49 @@ jobs:
             echo "attempt $i -> HTTP $code"
             if [ "$code" = "200" ]; then
               echo "backend is awake"
-              exit 0
+              break
             fi
             sleep 30
           done
-          echo "backend did not answer 200 yet, but the ping will have triggered a wake-up"
+          echo "ping done (the request itself wakes the service if it was asleep)"
+
+      # GitHub auto-disables scheduled workflows after ~60 days without a commit.
+      # Self-contained: when the branch is ~50 days idle, touch a file via the
+      # Contents API (no third-party actions — some get ToS-blocked).
+      - name: Prevent 60-day schedule auto-disable
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REPO="${GITHUB_REPOSITORY}"
+          BRANCH="${GITHUB_REF_NAME}"
+          LAST=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/commits/$BRANCH" | python3 -c "import json,sys,datetime; d=json.load(sys.stdin); t=(d.get('commit') or {}).get('committer',{}).get('date'); print((datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(t.replace('Z','+00:00'))).days if t else 0)" || echo 0)
+          echo "last commit age: ${LAST} days"
+          if [ "${LAST:-0}" -ge 50 ]; then
+            SHA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$REPO/contents/.github/keepalive.txt?ref=$BRANCH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('sha',''))" || echo "")
+            CONTENT=$(date +%s | base64 | tr -d '\n')
+            curl -s -o /dev/null -w "keepalive commit HTTP: %{http_code}\n" -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/contents/.github/keepalive.txt" \
+              -d "{\"message\":\"chore: keepalive (prevent schedule auto-disable)\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\",\"branch\":\"$BRANCH\"}" || true
+          fi
           exit 0
+
+      # Reliable cadence: this run pings immediately, waits ~4 minutes, then
+      # re-dispatches the next run. Chain cadence ~= 5 minutes.
+      - name: Self-perpetuating chain (re-dispatch next run)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 240
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/keep-alive.yml/dispatches" \
+              -d "{\"ref\":\"${GITHUB_REF_NAME}\"}")
+            echo "re-dispatch attempt $i -> HTTP $code"
+            [ "$code" = "204" ] && exit 0
+            sleep 30
+          done
+          echo "::warning::chain broken - re-run 'Keep backend awake' manually from the Actions tab"
+          exit 1
